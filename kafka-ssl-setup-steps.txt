@@ -1,0 +1,545 @@
+Kafka TLS/SSL Example Part 1: Create the Root CA
+This example uses the same self-signed root CA to sign all of the certificates used by the scheduler, Kafka brokers, and Vertica. If you cannot use the same CA to sign the keys for all of these systems, make sure you include the entire chain of trust in your keystores.
+
+The following Linux commands create a self-signed root CA. They are run by the dbadmin user on the Linux command line of one of the Vertica nodes.
+
+Generate a private key named root.key.
+
+$ openssl genrsa -out root.key
+Generating RSA private key, 2048 bit long modulus
+..............................................................................
+............................+++
+...............+++
+e is 65537 (0x10001)
+Generating a self-signed root CA named root.crt.
+
+$ openssl req -new -x509 -key root.key -out root.crt
+You are about to be asked to enter information that will be incorporated
+into your certificate request.
+What you are about to enter is what is called a Distinguished Name or a DN.
+There are quite a few fields but you can leave some blank
+For some fields there will be a default value,
+If you enter '.', the field will be left blank.
+-----
+Country Name (2 letter code) [AU]:US
+State or Province Name (full name) [Some-State]:MA
+Locality Name (eg, city) []:Cambridge
+Organization Name (eg, company) [Internet Widgits Pty Ltd]:My Company
+Organizational Unit Name (eg, section) []:
+Common Name (e.g. server FQDN or YOUR name) []:*.mycompany.com
+Email Address []:myemail@mycompany.com
+Change permissions on the files to prevent others from reading the root key, and preventing changes to the root certificate.
+
+$ ls
+root.crt  root.key
+$ chmod 600 root.key
+$ chmod 644 root.crt
+
+
+
+
+
+
+
+
+
+
+
+Kafka TLS/SSL Example Part 2: Configure Vertica for Mutual Authentication
+The following steps demonstrate setting up Vertica for mutual TLS/SSL authentication. For details on the steps in this example, see TLS Protocol.
+
+Step 1: Create Server Key and Certificate
+The following example creates a key and certificate for the Vertica server. It signs the certificate using the root CA created in the previous step.
+
+Generate the private key for the server:
+
+$ openssl genrsa -out server.key
+Generating RSA private key, 2048 bit long modulus
+....................................................................+++
+......................................+++
+e is 65537 (0x10001)
+Create a certificate request. In this step, set the Common Name field to a wildcard value for your domain (i.e. *.yourdomain.tld). Using a wildcard instead of a fully-qualified domain name here ensures that this certificate is accepted for all of the Vertica nodes in your cluster:
+
+$ openssl req -new -key server.key -out server_reqout.txt
+You are about to be asked to enter information that will be incorporated
+into your certificate request.
+What you are about to enter is what is called a Distinguished Name or a DN.
+There are quite a few fields but you can leave some blank
+For some fields there will be a default value,
+If you enter '.', the field will be left blank.
+-----
+Country Name (2 letter code) [AU]:US
+State or Province Name (full name) [Some-State]:MA
+Locality Name (eg, city) []:Cambridge
+Organization Name (eg, company) [Internet Widgits Pty Ltd]:My Company
+Organizational Unit Name (eg, section) []:
+Common Name (e.g. server FQDN or YOUR name) []:*.mycompany.com
+Email Address []:myaddress@mycompany.com
+
+Please enter the following 'extra' attributes
+to be sent with your certificate request
+A challenge password []:server_key_password
+An optional company name []:
+Sign the certificate request with the root CA:
+
+$ openssl x509 -req -in server_reqout.txt -days 3650 -sha1 -CAcreateserial -CA root.crt \
+-CAkey root.key -out server.crt
+Signature ok
+subject=/C=US/ST=MA/L=Cambridge/O=My Company/CN=*.mycompany.com/emailAddress=myaddress@mycompany.com
+Getting CA Private Key
+Step 2: Create the Client Key and Certificate
+After you enable mutual authentication mode on Vertica, you must have a key and certificate for your client in order to connect to the database. The steps to create a client certificate are the same as creating the server certificate:
+
+$ openssl genrsa -out client.key
+Generating RSA private key, 2048 bit long modulus
+................................................................+++
+..............................+++
+e is 65537 (0x10001)
+
+$ openssl req -new -key client.key -out client_reqout.txt
+You are about to be asked to enter information that will be incorporated
+into your certificate request.
+What you are about to enter is what is called a Distinguished Name or a DN.
+There are quite a few fields but you can leave some blank
+For some fields there will be a default value,
+If you enter '.', the field will be left blank.
+-----
+Country Name (2 letter code) [AU]:US
+State or Province Name (full name) [Some-State]:MA
+Locality Name (eg, city) []:Cambridge
+Organization Name (eg, company) [Internet Widgits Pty Ltd]:My Company
+Organizational Unit Name (eg, section) []:
+Common Name (e.g. server FQDN or YOUR name) []:*.mycompany.com
+Email Address []:myemail@mycompany.com
+
+Please enter the following 'extra' attributes
+to be sent with your certificate request
+A challenge password []:client_key_password
+An optional company name []:
+
+$ openssl x509 -req -in client_reqout.txt -days 3650 -sha1 -CAcreateserial -CA root.crt \
+  -CAkey root.key -out client.crt
+Signature ok
+subject=/C=US/ST=MA/L=Cambridge/O=My Company/CN=*.mycompany.com/emailAddress=myemail@mycompany.com
+Getting CA Private Key
+Step 3: Distributed the Keys and Certificates
+With the server and client keys created, you are ready to deploy the keys to your Vertica cluster:
+
+Set permissions on the certificates and key files and cleans up temporary key files:
+
+$ ls
+client.crt  client.key  client_reqout.txt  root.crt  root.key  root.srl  server.crt  
+server.key  server_reqout.txt
+$ chmod 600 client.key server.key
+$ chmod 644 client.crt server.crt
+$ rm client_reqout.txt server_reqout.txt
+Log into Vertica using vsql:
+
+$ vsql
+Password: dbadmin_password
+Welcome to vsql, the Vertica Analytic Database interactive terminal.
+
+Type:  \h or \? for help with vsql commands
+       \g or terminate with semicolon to execute query
+       \q to quit
+Enables SSL on the Vertica server and then exit:
+
+=> select set_config_parameter('EnableSSL', '1');
+WARNING 4324:  Parameter EnableSSL will not take effect until database restart
+    set_config_parameter
+----------------------------
+ Parameter set successfully
+(1 row)
+
+=> \q
+Shut down the database. You must shut down it down in order to distribute the encryption keys and to have the EnableSSL configuration parameter take effect.
+
+$ adminTools --tool stop_db -d VMart -p dbadmin_password
+        Connecting to database
+        Issuing shutdown command to database
+Database VMart stopped successfully
+Add the server key and certificate to Vertica using the Admin Tools' command line set_ssl_params tool:
+
+$ adminTools --tool  set_ssl_params -d VMart -k server.key -c server.crt \
+              -a root.crt -p dbadmin_password
+Success. Change committed on a quorum of nodes.
+Restart the database so the configuration change takes effect:
+
+$ adminTools --tool start_db -d VMart -p vertica
+        Starting nodes:
+                v_vmart_node0001 (10.20.110.7)
+                v_vmart_node0002 (10.20.110.8)
+                v_vmart_node0003 (10.20.110.9)
+        Starting Vertica on all nodes. Please wait, databases with a large catalog may take a while to initialize.
+        Node Status: v_vmart_node0001: (DOWN) v_vmart_node0002: (DOWN) v_vmart_node0003: (DOWN)
+        Node Status: v_vmart_node0001: (DOWN) v_vmart_node0002: (DOWN) v_vmart_node0003: (DOWN)
+        Node Status: v_vmart_node0001: (DOWN) v_vmart_node0002: (DOWN) v_vmart_node0003: (DOWN)
+        Node Status: v_vmart_node0001: (DOWN) v_vmart_node0002: (DOWN) v_vmart_node0003: (DOWN)
+        Node Status: v_vmart_node0001: (INITIALIZING) v_vmart_node0002: (INITIALIZING) v_vmart_node0003: (INITIALIZING)
+        Node Status: v_vmart_node0001: (UP) v_vmart_node0002: (UP) v_vmart_node0003: (UP)
+Database VMart: Startup Succeeded.  All Nodes are UP
+Copy the client keys to the dbadmin user's .vsql directory so that vsql is able to authenticate with Vertica:
+
+$ mkdir ~/.vsql
+$ cp client.key client.crt root.crt ~/.vsql
+Log into Vertica and query the SESSIONS system table to verify that the connection is using mutual TLS/SSL authentication.
+
+$ vsql
+Password: dbadmin_password
+Welcome to vsql, the Vertica Analytic Database interactive terminal.
+
+Type:  \h or \? for help with vsql commands
+       \g or terminate with semicolon to execute query
+       \q to quit
+
+SSL connection (cipher: DHE-RSA-AES256-GCM-SHA384, bits: 256, protocol: TLSv1.2)
+
+=> select user_name,ssl_state from sessions;
+ user_name | ssl_state
+-----------+-----------
+ dbadmin   | Mutual
+(1 row)
+
+
+
+
+
+
+
+
+Kafka TLS/SSL Example Part 3: Configure Kafka
+This example configures Kafka to use TLS/SSL with client connections. You can also choose to have Kafka use TLS/SSL to communicate between brokers. However, this configuration option has no impact on establishing an encrypted connection between Vertica and Kafka.
+
+Step 1: Create the Truststore and Keystore
+The following steps create the truststore and keystore for the Kafka brokers.
+
+These steps are run on the same system as the previous steps of the example. If you wish to perform these steps on a broker in your Kafka cluster, you must copy the root.crt and root.key file to that system.
+
+Create a truststore file for all of the Kafka brokers. In this example, this truststore only needs to contain the root CA created earlier, as it is used to sign all of the certificates in this example. If you are not using a single CA to sign all of the certificates, add all of the CAs you used to sign the other certificates.
+
+All of the brokers can use the same truststore file.
+
+$ keytool -keystore kafka.truststore.jks -alias CARoot -import \ 
+           -file root.crt
+Enter keystore password: some_password
+Re-enter new password: some_password
+Owner: EMAILADDRESS=myemail@mycompany.com, CN=*.mycompany.com, O=MyCompany, L=Cambridge, ST=MA, C=US
+Issuer: EMAILADDRESS=myemail@mycompany.com, CN=*.mycompany.com, O=MyCompany, L=Cambridge, ST=MA, C=US
+Serial number: c3f02e87707d01aa
+Valid from: Fri Mar 22 13:37:37 EDT 2019 until: Sun Apr 21 13:37:37 EDT 2019
+Certificate fingerprints:
+         MD5:  73:B1:87:87:7B:FE:F1:6E:94:55:FD:AF:5D:D0:C3:0C
+         SHA1: C0:69:1C:93:54:21:87:C7:03:93:FE:39:45:66:DE:22:18:7E:CD:94
+         SHA256: 23:03:BB:B7:10:12:50:D9:C5:D0:B7:58:97:41:1E:0F:25:A0:DB:
+		         D0:1E:7D:F9:6E:60:8F:79:A6:1C:3F:DD:D5
+Signature algorithm name: SHA256withRSA
+Subject Public Key Algorithm: 2048-bit RSA key
+Version: 3
+
+Extensions:
+
+#1: ObjectId: 2.5.29.35 Criticality=false
+AuthorityKeyIdentifier [
+KeyIdentifier [
+0000: 50 69 11 64 45 E9 CC C5   09 EE 26 B5 3E 71 39 7C  Pi.dE.....&.>q9.
+0010: E5 3D 78 16                                        .=x.
+]
+]
+
+#2: ObjectId: 2.5.29.19 Criticality=false
+BasicConstraints:[
+  CA:true
+  PathLen:2147483647
+]
+
+#3: ObjectId: 2.5.29.14 Criticality=false
+SubjectKeyIdentifier [
+KeyIdentifier [
+0000: 50 69 11 64 45 E9 CC C5   09 EE 26 B5 3E 71 39 7C  Pi.dE.....&.>q9.
+0010: E5 3D 78 16                                        .=x.
+]
+]
+
+Trust this certificate? [no]:  yes
+Certificate was added to keystore
+Create a keystore file for the Kafka broker named kafka01. Each broker gets its own unique keystore. The keytool command in the following example adds a Subject Alternative Name (SAN) to act as a fall back when performing SSL authentication. Use the fully-qualified domain name (FQDN) of your Kafka broker as the value for this option and your response to the "What is your first and last name?" prompt. In this example, the FQDN of the Kafka broker is kafka01.mycompany.com. The alias for the keytool is set to localhost, so local connections on the broker can authenticate using SSL.
+
+$ keytool -keystore kafka01.keystore.jks -alias localhost -validity 365 -genkey -keyalg RSA \ 
+  -ext SAN=DNS:kafka01.mycompany.com
+Enter keystore password: some_password
+Re-enter new password: some_password
+What is your first and last name?
+  [Unknown]:  kafka01.mycompany.com
+What is the name of your organizational unit?
+  [Unknown]:  
+What is the name of your organization?
+  [Unknown]: MyCompany
+What is the name of your City or Locality?
+  [Unknown]:  Cambridge
+What is the name of your State or Province?
+  [Unknown]:  MA
+What is the two-letter country code for this unit?
+  [Unknown]:  US
+Is CN=Database Admin, OU=MyCompany, O=Unknown, L=Cambridge, ST=MA, C=US correct?
+  [no]:  yes
+
+Enter key password for <localhost>
+        (RETURN if same as keystore password): 
+		
+Export the Kafka broker's certificate so it can be signed by the root CA.
+
+$ keytool -keystore kafka01.keystore.jks -alias localhost \
+           -certreq -file kafka01.unsigned.crt
+Enter keystore password: some_password
+Sign the Kafka broker's certificate using the root CA.
+
+$ openssl x509 -req -CA root.crt -CAkey root.key -in kafka01.unsigned.crt \
+         -out kafka01.signed.crt -days 365 -CAcreateserial
+Signature ok
+subject=/C=US/ST=MA/L=Cambridge/O=Unknown/OU=MyCompany/CN=Database Admin
+Getting CA Private Key
+Import the root CA into the broker's keystore.
+
+$ keytool -keystore kafka01.keystore.jks -alias CARoot -import -file root.crt
+Enter keystore password: some_password
+Owner: EMAILADDRESS=myemail@mycompany.com, CN=*.mycompany.com, O=MyCompany, L=Cambridge, ST=MA, C=US
+Issuer: EMAILADDRESS=myemail@mycompany.com, CN=*.mycompany.com, O=MyCompany, L=Cambridge, ST=MA, C=US
+Serial number: c3f02e87707d01aa
+Valid from: Fri Mar 22 13:37:37 EDT 2019 until: Sun Apr 21 13:37:37 EDT 2019
+Certificate fingerprints:
+         MD5:  73:B1:87:87:7B:FE:F1:6E:94:55:FD:AF:5D:D0:C3:0C
+         SHA1: C0:69:1C:93:54:21:87:C7:03:93:FE:39:45:66:DE:22:18:7E:CD:94
+         SHA256: 23:03:BB:B7:10:12:50:D9:C5:D0:B7:58:97:41:1E:0F:25:A0:DB:D0:1E:7D:F9:6E:60:8F:79:A6:1C:3F:DD:D5
+Signature algorithm name: SHA256withRSA
+Subject Public Key Algorithm: 2048-bit RSA key
+Version: 3
+
+Extensions:
+
+#1: ObjectId: 2.5.29.35 Criticality=false
+AuthorityKeyIdentifier [
+KeyIdentifier [
+0000: 50 69 11 64 45 E9 CC C5   09 EE 26 B5 3E 71 39 7C  Pi.dE.....&.>q9.
+0010: E5 3D 78 16                                        .=x.
+]
+]
+
+#2: ObjectId: 2.5.29.19 Criticality=false
+BasicConstraints:[
+  CA:true
+  PathLen:2147483647
+]
+
+#3: ObjectId: 2.5.29.14 Criticality=false
+SubjectKeyIdentifier [
+KeyIdentifier [
+0000: 50 69 11 64 45 E9 CC C5   09 EE 26 B5 3E 71 39 7C  Pi.dE.....&.>q9.
+0010: E5 3D 78 16                                        .=x.
+]
+]
+
+Trust this certificate? [no]:  yes
+Certificate was added to keystore
+If you are not using the same CA to sign all keys and certificates in your own environment, add the entire chain of CAs you used to sign your certificate to the keystore, all the way up to the root CA. Including the entire chain of trust helps other systems verify the identity of your Kafka broker.
+
+Import the signed Kafka broker certificate into the keystore.
+
+$ keytool -keystore kafka01.keystore.jks -alias localhost \
+           -import -file kafka01.signed.crt
+Enter keystore password: some_password
+Owner: CN=Database Admin, OU=MyCompany, O=Unknown, L=Cambridge, ST=MA, C=US
+Issuer: EMAILADDRESS=myemail@mycompany.com, CN=*.mycompany.com, O=MyCompany, L=Cambridge, ST=MA, C=US
+Serial number: b4bba9a1828ecaaf
+Valid from: Tue Mar 26 12:26:34 EDT 2019 until: Wed Mar 25 12:26:34 EDT 2020
+Certificate fingerprints:
+         MD5:  17:EA:3E:15:B4:15:E9:93:67:EE:59:C0:4F:D1:4C:01
+         SHA1: D5:35:B7:F7:44:7C:D6:B4:56:6F:38:2D:CD:3A:16:44:19:C1:06:B7
+         SHA256: 25:8C:46:03:60:A7:4C:10:A8:12:8E:EA:4A:FA:42:1D:A8:C5:FB:65:81:74:CB:46:FD:B1:33:64:F2:A3:46:B0
+Signature algorithm name: SHA256withRSA
+Subject Public Key Algorithm: 2048-bit RSA key
+Version: 1
+Trust this certificate? [no]:  yes
+Certificate was added to keystore
+If you are not logged into the Kafka broker for which you prepared the keystore, copy the truststore and keystore to it using scp. If you have already decided where to store the keystore and truststore files in the broker's filesystem, you can directly copy them to their final destination. This example just copies them to the root user's home directory temporarily. The next step moves them into their final location.
+
+$ scp kafka.truststore.jks kafka01.keystore.jks root@kafka01.mycompany.com:
+root@kafka01.mycompany.com's password: root_password
+kafka.truststore.jks                              100% 1048     1.0KB/s   00:00
+kafka01.keystore.jks                              100% 3277     3.2KB/s   00:00
+Repeat steps 2 through 7 for each remaining Kafka broker.
+Step 2: Letting Kafka Read the Keystore and Truststore Files
+If you did not copy the truststore and keystore to directory where Kafka can read them in the previous step, you must copy them to a final location on the broker. You must also allow the user account you use to run Kafka to read these files. The easiest way to ensure the user's access is to give this user ownership of these files.
+
+In this example, Kafka is run by a Linux system user named kafka. If you use another user to run Kafka, be sure to set the permissions on the truststore and keystore files appropriately.
+
+Log into the Kafka broker as root.
+Copy the truststore and keystore to a directory where Kafka can access them. There is no set location for these files: you can choose a directory under /etc, or some other location where configuration files are usually stored. This example copies them from root's home directory to Kafka's configuration directory named /opt/kafka/config/. In your own system, this configuration directory may be in a different location depending on how you installed Kafka.
+
+~# cd /opt/kafka/config/
+/opt/kafka/config# cp /root/kafka01.keystore.jks /root/kafka.truststore.jks .
+Change the ownership of the truststore and keystore files, if you are not logged in as the user account that runs Kafka. This example changes the ownership from root (which is the user currently logged in) to the kafka user:
+
+/opt/kafka/config# ls -l
+total 80
+-rw-r--r-- 1 kafka nogroup  906 Feb 21  2018 connect-console-sink.properties
+-rw-r--r-- 1 kafka nogroup  909 Feb 21  2018 connect-console-source.properties
+-rw-r--r-- 1 kafka nogroup 5807 Feb 21  2018 connect-distributed.properties
+-rw-r--r-- 1 kafka nogroup  883 Feb 21  2018 connect-file-sink.properties
+-rw-r--r-- 1 kafka nogroup  881 Feb 21  2018 connect-file-source.properties
+-rw-r--r-- 1 kafka nogroup 1111 Feb 21  2018 connect-log4j.properties
+-rw-r--r-- 1 kafka nogroup 2730 Feb 21  2018 connect-standalone.properties
+-rw-r--r-- 1 kafka nogroup 1221 Feb 21  2018 consumer.properties
+-rw------- 1 root  root    3277 Mar 27 08:03 kafka01.keystore.jks
+-rw-r--r-- 1 root  root    1048 Mar 27 08:03 kafka.truststore.jks
+-rw-r--r-- 1 kafka nogroup 4727 Feb 21  2018 log4j.properties
+-rw-r--r-- 1 kafka nogroup 1919 Feb 21  2018 producer.properties
+-rw-r--r-- 1 kafka nogroup 6970 May 30  2018 server.properties
+-rw-r--r-- 1 kafka nogroup 1032 Feb 21  2018 tools-log4j.properties
+-rw-r--r-- 1 kafka nogroup 1023 Feb 21  2018 zookeeper.properties
+/opt/kafka/config# chown kafka kafka01.keystore.jks kafka.truststore.jks
+/opt/kafka/config# ls -l
+total 80
+-rw-r--r-- 1 kafka nogroup  906 Feb 21  2018 connect-console-sink.properties
+-rw-r--r-- 1 kafka nogroup  909 Feb 21  2018 connect-console-source.properties
+-rw-r--r-- 1 kafka nogroup 5807 Feb 21  2018 connect-distributed.properties
+-rw-r--r-- 1 kafka nogroup  883 Feb 21  2018 connect-file-sink.properties
+-rw-r--r-- 1 kafka nogroup  881 Feb 21  2018 connect-file-source.properties
+-rw-r--r-- 1 kafka nogroup 1111 Feb 21  2018 connect-log4j.properties
+-rw-r--r-- 1 kafka nogroup 2730 Feb 21  2018 connect-standalone.properties
+-rw-r--r-- 1 kafka nogroup 1221 Feb 21  2018 consumer.properties
+-rw------- 1 kafka root    3277 Mar 27 08:03 kafka01.keystore.jks
+-rw-r--r-- 1 kafka root    1048 Mar 27 08:03 kafka.truststore.jks
+-rw-r--r-- 1 kafka nogroup 4727 Feb 21  2018 log4j.properties
+-rw-r--r-- 1 kafka nogroup 1919 Feb 21  2018 producer.properties
+-rw-r--r-- 1 kafka nogroup 6970 May 30  2018 server.properties
+-rw-r--r-- 1 kafka nogroup 1032 Feb 21  2018 tools-log4j.properties
+-rw-r--r-- 1 kafka nogroup 1023 Feb 21  2018 zookeeper.properties
+Repeat steps 1 through 3 for the rest of the Kafka brokers.
+Step 3: Edit the Kafka Configuration to Use TLS/SSL Encryption
+With the truststore and keystore in place, your next step is to edit the Kafka's server.properties configuration file to tell Kafka to use TLS/SSL encryption. This file is usually stored in the Kafka config directory. The location of this directory depends on how you installed Kafka. In this example, the file is located in /opt/kafka/config.
+
+When editing the files, be sure you do not change their ownership. The best way to ensure Linux does not change the file's ownership is to use su to become the user account that runs Kafka, assuming you are not already logged in as that user:
+
+/opt/kafka/config# su -s /bin/bash kafka
+The previous command lets you start a shell as the kafka system user even if that user cannot log in.
+
+The server.properties file contains the Kafka broker's settings in a setting=value format. To configure the Kafka broker to use SSL, you must alter or add the following settings to this file:
+
+Setting	Description
+listeners	
+The host names and ports on which the Kafka broker listens. If you are not using SSL for connections between brokers, you must supply both a PLANTEXT and SSL option, such as:
+
+listeners=PLAINTEXT://hostname:9092,SSL://hostname:9093
+
+ssl.keystore.location	The absolute path to the keystore file.
+ssl.keystore.password	The password for the keystore file.
+ssl.key.password	The password for the Kafka broker's key in the keystore. You can make this password different than the keystore password if you choose.
+ssl.truststore.location	The location of the truststore file.
+ssl.truststore.password	The password to access the truststore.
+ssl.enabled.protocols	The TLS/SSL protocols that Kafka allows clients to use.
+ssl.client.auth	Whether SSL authentication is required or optional. The most secure setting for this setting is required to verify the client's identity.
+These settings vary depending on your version of Kafka. Always consult the Apache Kafka documentation for your version of Kafka before making changes to server.properties. In particular, be aware that Kafka version 2.0 and later enables host name verification for clients and inter-broker communications by default.
+
+This example configures Kafka to verify client identities via SSL authentication. It does not use SSL to communicate with other brokers, so the server.properties file defines both SSL and PLAINTEXT listener ports. It does not supply a host name for listener ports which tells Kafka to listen on the default network interface.
+
+The lines added to the kafka01 broker's copy of server.properties for this configuration are:
+
+listeners=PLAINTEXT://:9092,SSL://:9093
+ssl.keystore.location=/opt/kafka/config/kafka01.keystore.jks
+ssl.keystore.password=vertica
+ssl.key.password=vertica
+ssl.truststore.location=/opt/kafka/config/kafka.truststore.jks
+ssl.truststore.password=vertica
+ssl.enabled.protocols=TLSv1.2,TLSv1.1,TLSv1
+ssl.client.auth=required
+You must make these changes to the server.properties file on all of your brokers.
+
+Step 4: Restart Your Kafka Cluster
+The changes you make to your broker's server.properties files do not take effect until you restart Kafka. How you restart kafak depends on your installation:
+
+If Kafka is running as part of a Hadoop cluster, you can usually restart it from within whatever interface you use to control Hadoop (such as Ambari).
+If you installed Kafka directly, you can restart it either by directly running the kafka-server-stop.sh and kafka-server-start.sh scripts or via the Linux system's service control commands (such as systemctl). You must run this command on each broker.
+Step 5: Testing Your Configuration
+Given the complexity of configuring Kafka for TLS/SSL authentication, always test your Kafka configuration before proceeding.
+
+If you have not configured client authentication, you can quickly test whether Kafka can access its keystore by running the command:
+
+openssl s_client -debug -connect broker_host_name:9093 -tls1
+If Kafka is able to access its keystore, this command will output a dump of the broker's certificate:
+
+# openssl s_client -debug -connect kafka01.mycompany.com:9093 -tls1
+CONNECTED(00000003)
+write to 0xa4e4f0 [0xa58023] (197 bytes =&gt; 197 (0xC5))
+0000 - 16 03 01 00 c0 01 00 00-bc 03 01 76 85 ed f0 fe   ...........v....
+0010 - 60 60 7e 78 9d d4 a8 f7-e6 aa 5c 80 b9 a7 37 61   ``~x......\...7a
+0020 - 8e 04 ac 03 6d 52 86 f5-84 4b 5c 00 00 62 c0 14   ....mR...K\..b..
+0030 - c0 0a 00 39 00 38 00 37-00 36 00 88 00 87 00 86   ...9.8.7.6......
+0040 - 00 85 c0 0f c0 05 00 35-00 84 c0 13 c0 09 00 33   .......5.......3
+0050 - 00 32 00 31 00 30 00 9a-00 99 00 98 00 97 00 45   .2.1.0.........E
+0060 - 00 44 00 43 00 42 c0 0e-c0 04 00 2f 00 96 00 41   .D.C.B...../...A
+0070 - c0 11 c0 07 c0 0c c0 02-00 05 00 04 c0 12 c0 08   ................
+0080 - 00 16 00 13 00 10 00 0d-c0 0d c0 03 00 0a 00 ff   ................
+0090 - 01 00 00 31 00 0b 00 04-03 00 01 02 00 0a 00 1c   ...1............
+00a0 - 00 1a 00 17 00 19 00 1c-00 1b 00 18 00 1a 00 16   ................
+00b0 - 00 0e 00 0d 00 0b 00 0c-00 09 00 0a 00 23 00 00   .............#..
+00c0 - 00 0f 00 01 01                                    .....
+read from 0xa4e4f0 [0xa53ad3] (5 bytes =&gt; 5 (0x5))
+0000 - 16 03 01 08 fc                                    .....
+             . . . 
+You can exit out of this command using Ctrl+C.
+
+The method shown above only tells you if Kafka is able to find its keystore. The best test of whether Kafka is able to accept SSL connections is to configure the command-line Kafka producer and consumer. In order to configure these tools, you must first create a client keystore. These steps are identical to creating a broker keystore. They are summarized here:
+
+Create the client keystore:
+
+keytool -keystore client.keystore.jks -alias localhost -validity 365 -genkey -keyalg RSA -ext SAN=DNS:fqdn_of_client_system
+Respond to the "What is your first and last name?" with the FQDN of the system you will use to run the producer and/or consumer. Answer the rest of the prompts with the details of your organization.
+Export the client certificate so it can be signed: 
+
+keytool -keystore client.keystore.jks -alias localhost -certreq -file client.unsigned.cert
+Sign the client certificate with the root CA:
+
+openssl x509 -req -CA root.crt -CAkey root.key -in client.unsigned.cert -out client.signed.cert \
+        -days 365 -CAcreateserial 
+Add the root CA to keystore:
+
+keytool -keystore client.keystore.jks -alias CARoot -import -file root.crt
+Add the signed client certificate to the keystore:
+
+keytool -keystore client.keystore.jks -alias localhost -import -file client.signed.cert
+Copy the keystore to a location where you will use it. For example, you could choose to copy it to the same directory where you copied the keystore for the Kafka broker. If you choose to copy it to some other location, or intend to use some other user to run the command-line clients, be sure to add a copy of the truststore file you created for the brokers. Clients can reuse this truststore file for authenticating the Kafka brokers because the same CA is used to sign all of the certificates. Also set the file's ownership and permissions accordingly.
+Next, you must create a properties file (similar to the broker's server.properties file) that configures the command-line clients to use SSL. For a client running on the Kafka broker named kafka01, your configuration file could would look like this:
+
+security.protocol=SSL
+ssl.truststore.location=/opt/kafka/config/kafka.truststore.jks
+ssl.truststore.password=trustore_password
+ssl.keystore.location=/opt/kafka/config/client.keystore.jks
+ssl.keystore.password=keystore_password
+ssl.key.password=key_password
+ssl.enabled.protocols=TLSv1.2,TLSv1.1,TLSv1
+ssl.client.auth=required
+This property file assumes the keystore file is located in the Kafka configuration directory.
+
+Finally, you can run the command line producer or consumer to ensure they can connect and process data. You supply these clients the properties file you just created. The following example assumes you stored the properties file in the Kafka configuration directory, and that Kafka is installed in /opt/kafka:
+
+~# cd /opt/kafka
+
+
+/opt/kafka# bin/kafka-console-producer.sh --broker-list kafka01.mycompany.com:9093  \
+                                          --topic test --producer.config config/client.properties
+>test
+>test again
+>More testing. These messages seem to be getting through!
+^D
+/opt/kafka# bin/kafka-console-consumer.sh --bootstrap-server kafaka01.mycompany.com:9093  --topic test \
+                                          --consumer.config config/client.properties --from-beginning
+test
+test again
+More testing. These messages seem to be getting through!
+^C
+Processed a total of 3 messages
+
+
+
+
+
